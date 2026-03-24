@@ -1407,12 +1407,16 @@ class GameOverDialog(QDialog):
         self.setWindowTitle("Game Over!")
         self.setMinimumWidth(380)
         self.result_choice = self.QUIT
+        solo = (len(scores) == 1)
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
         layout.setContentsMargins(20, 20, 20, 20)
 
         winner_name, winner_score = scores[0]
-        msg = QLabel(f"🏆  {winner_name} wins with {winner_score} pts!")
+        if solo:
+            msg = QLabel(f"🎲  {winner_name} — {winner_score} pts!")
+        else:
+            msg = QLabel(f"🏆  {winner_name} wins with {winner_score} pts!")
         msg.setFont(QFont("Arial", 13, QFont.Weight.Bold))
         msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
         msg.setStyleSheet(f"color: {CLR_ACTIVE_TURN}; padding-bottom: 4px;")
@@ -1446,12 +1450,22 @@ class GameOverDialog(QDialog):
         sub.setStyleSheet("color: #94A3B8; font-size: 11px;")
         layout.addWidget(sub)
 
-        for text, style, choice in [
-            ("▶  Same Order",              accent_btn_style(), self.SAME_ORDER),
-            ("🎲  Roll for Order",          purple_btn_style(), self.ROLL_ORDER),
-            ("📋  New Game / Change Players","",                self.NEW_GAME),
-            ("✖  Quit",                    "",                 self.QUIT),
-        ]:
+        # Solo: only offer Play Again and Quit (no order options)
+        if solo:
+            buttons = [
+                ("▶  Play Again",              accent_btn_style(), self.SAME_ORDER),
+                ("📋  New Game / Change Players","",                self.NEW_GAME),
+                ("✖  Quit",                    "",                 self.QUIT),
+            ]
+        else:
+            buttons = [
+                ("▶  Same Order",              accent_btn_style(), self.SAME_ORDER),
+                ("🎲  Roll for Order",          purple_btn_style(), self.ROLL_ORDER),
+                ("📋  New Game / Change Players","",                self.NEW_GAME),
+                ("✖  Quit",                    "",                 self.QUIT),
+            ]
+
+        for text, style, choice in buttons:
             btn = QPushButton(text)
             if style: btn.setStyleSheet(style)
             btn.clicked.connect(lambda _, c=choice: self._pick(c))
@@ -2174,9 +2188,12 @@ class YahtzeeScorecard(QMainWindow):
             self.turn_label.setVisible(False)
 
         for c, name in enumerate(self.players):
-            self.table.setHorizontalHeaderItem(
-                c, QTableWidgetItem(f"▶  {name}" if c == curr else name)
-            )
+            if len(self.players) == 1:
+                self.table.setHorizontalHeaderItem(c, QTableWidgetItem(name))
+            else:
+                self.table.setHorizontalHeaderItem(
+                    c, QTableWidgetItem(f"▶  {name}" if c == curr else name)
+                )
 
         UPPER_TT       = "① Joker: score here first if this matches your five-of-a-kind number."
         LOWER_TT       = "② Joker: score here if your matching Upper box is already claimed."
@@ -2381,15 +2398,21 @@ class YahtzeeScorecard(QMainWindow):
     def update_status_bar(self):
         if not hasattr(self, '_sb_data'): return
         totals = [int(self.table.item(18, c).text()) for c in range(len(self.players))]
-        curr = self.current_turn_index
-        d    = self._sb_data
+        curr   = self.current_turn_index
+        solo   = (len(self.players) == 1)
+        d      = self._sb_data
 
-        best_c = totals.index(max(totals))
-        d['leader'] = f"🏆 {self.players[best_c]} leading ({totals[best_c]} pts)"
-        d['scores'] = "  ".join(
-            f"{self.players[c]}: {totals[c]}" for c in range(len(self.players))
-        )
-        d['last']   = getattr(self, '_last_score_msg', "")
+        if solo:
+            d['leader'] = f"🎲 {self.players[0]}  —  {totals[0]} pts"
+            d['scores'] = ""
+        else:
+            best_c = totals.index(max(totals))
+            d['leader'] = f"🏆 {self.players[best_c]} leading ({totals[best_c]} pts)"
+            d['scores'] = "  ".join(
+                f"{self.players[c]}: {totals[c]}" for c in range(len(self.players))
+            )
+
+        d['last'] = getattr(self, '_last_score_msg', "")
 
         u_sum = sum(int(self.table.item(r, curr).text()) for r in range(6)
                     if self.table.item(r, curr).text().isdigit())
@@ -2411,19 +2434,28 @@ class YahtzeeScorecard(QMainWindow):
         d['best'] = (f"🎯 Best: {best_who} → {best_cat} ({best_score} pts)"
                      if best_who else "🎯 Best: —")
 
-        sp, sn = self._streak_player, self._streak_count
-        if sp and sn >= 2:
-            d['streak'] = f"{'🔥' * min(sn, 3)} {sp}: {sn}-turn streak"
+        if solo:
+            # Replace streak slot with categories remaining count
+            remaining = sum(
+                1 for r in PRIMARY_CATEGORIES
+                if self.table.item(r, 0) and
+                self.table.item(r, 0).data(Qt.ItemDataRole.UserRole) == "unclaimed"
+            )
+            d['streak'] = f"📋 {remaining} categor{'y' if remaining == 1 else 'ies'} left"
         else:
-            st = sorted(enumerate(totals), key=lambda x: x[1], reverse=True)
-            if len(st) >= 2:
-                li, ls = st[0]; si, ss = st[1]
-                gap = ls - ss
-                d['streak'] = (f"📊 {self.players[li]} & {self.players[si]} tied!"
-                               if gap == 0 else
-                               f"📊 {self.players[si]} trails {self.players[li]} by {gap} pts")
+            sp, sn = self._streak_player, self._streak_count
+            if sp and sn >= 2:
+                d['streak'] = f"{'🔥' * min(sn, 3)} {sp}: {sn}-turn streak"
             else:
-                d['streak'] = ""
+                st = sorted(enumerate(totals), key=lambda x: x[1], reverse=True)
+                if len(st) >= 2:
+                    li, ls = st[0]; si, ss = st[1]
+                    gap = ls - ss
+                    d['streak'] = (f"📊 {self.players[li]} & {self.players[si]} tied!"
+                                   if gap == 0 else
+                                   f"📊 {self.players[si]} trails {self.players[li]} by {gap} pts")
+                else:
+                    d['streak'] = ""
         self._render_status_bar()
 
     # ------------------------------------------------ game over / save ------
@@ -2532,11 +2564,14 @@ if __name__ == "__main__":
         else:
             names = ordered_names
 
-        # --- Roll-off ---
-        rolloff = RollOffDialog(names)
-        if not rolloff.exec():
-            break
-        ordered_names = rolloff.sorted_names
+        # --- Roll-off (skipped for single player) ---
+        if len(names) > 1:
+            rolloff = RollOffDialog(names)
+            if not rolloff.exec():
+                break
+            ordered_names = rolloff.sorted_names
+        else:
+            ordered_names = names
 
         # --- Game ---
         w      = YahtzeeScorecard(ordered_names, use_digital_roller=use_roller_carry)
@@ -2555,7 +2590,7 @@ if __name__ == "__main__":
             use_roller_carry = False   # let them choose again at registration
             continue
 
-        if not getattr(w, 'roll_for_order', False):
+        if not getattr(w, 'roll_for_order', False) or len(ordered_names) == 1:
             # Same Order — skip registration and rolloff entirely
             w2_names = ordered_names
             while True:
