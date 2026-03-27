@@ -65,6 +65,24 @@ DARK_STYLESHEET = f"""
                              padding: 5px; border: 1px solid #2E3F60; font-weight: bold; }}
     QComboBox, QLineEdit {{ background-color: {CLR_UNCLAIMED}; color: #F1F5F9;
                             border: 1px solid #2E3F60; border-radius: 3px; padding: 2px; }}
+    QComboBox::drop-down {{ border: none; background-color: {CLR_UNCLAIMED}; }}
+    QComboBox::down-arrow {{ width: 10px; height: 10px; }}
+    QComboBox QAbstractItemView {{
+        background-color: {CLR_TABLE};
+        color: #F1F5F9;
+        border: 1px solid #2E3F60;
+        selection-background-color: {CLR_ACCENT};
+        selection-color: #000000;
+        outline: none;
+    }}
+    QComboBox QAbstractItemView::item {{
+        padding: 4px 8px;
+        min-height: 24px;
+    }}
+    QComboBox QAbstractItemView::item:hover {{
+        background-color: {CLR_ACTIVE_UNCLAIMED};
+        color: #F1F5F9;
+    }}
     QPushButton {{ background-color: #1E2740; color: #F1F5F9; border-radius: 4px;
                    padding: 10px; font-weight: bold; }}
     QPushButton:hover {{ background-color: #253354; }}
@@ -500,8 +518,10 @@ class YahtzeeRollerWidget(QWidget):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _, n=name: self._set_theme(n))
             self.theme_buttons[name] = btn
-            theme_row.addWidget(btn)
-        root.addLayout(theme_row)
+            if not self.scorecard_mode:
+                theme_row.addWidget(btn)
+        if not self.scorecard_mode:
+            root.addLayout(theme_row)
 
         self.status_label = QLabel("Press ROLL to start!")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1115,10 +1135,10 @@ class RulesDialog(QDialog):
 # REGISTRATION DIALOG  (+ Digital Roller checkbox)
 # ============================================================================
 class PlayerSetupDialog(QDialog):
-    def __init__(self, prefill=None):
+    def __init__(self, prefill=None, initial_theme="Classic"):
         super().__init__()
         self.setWindowTitle("Yahtzii Registration")
-        self.setFixedSize(420, 560)
+        self.setFixedSize(420, 630)
         self.player_inputs = []
         layout = QVBoxLayout(self)
 
@@ -1169,6 +1189,27 @@ class PlayerSetupDialog(QDialog):
         layout.addWidget(roller_frame)
         # ────────────────────────────────────────────────────────────────
 
+        # ── Theme picker ─────────────────────────────────────────────────
+        theme_frame = QFrame()
+        theme_frame.setStyleSheet(
+            f"background: {CLR_UNCLAIMED}; border: 1px solid #2E3F60; border-radius: 6px;"
+        )
+        theme_inner = QHBoxLayout(theme_frame)
+        theme_inner.setContentsMargins(12, 10, 12, 10)
+        theme_lbl = QLabel("\U0001f3a8  Theme:")
+        theme_lbl.setStyleSheet("font-weight: bold; font-size: 12px; border: none;")
+        theme_inner.addWidget(theme_lbl)
+        self.theme_combo = QComboBox()
+        for tname in _ROLLER_THEMES:
+            self.theme_combo.addItem(tname)
+        if initial_theme in _ROLLER_THEMES:
+            self.theme_combo.setCurrentText(initial_theme)
+        self.theme_combo.setMinimumWidth(130)
+        theme_inner.addWidget(self.theme_combo)
+        theme_inner.addStretch()
+        layout.addWidget(theme_frame)
+        # ────────────────────────────────────────────────────────────────
+
         self.next_btn = QPushButton("Next: Determine Order")
         self.next_btn.setStyleSheet(accent_btn_style())
         self.next_btn.clicked.connect(self.accept)
@@ -1177,6 +1218,10 @@ class PlayerSetupDialog(QDialog):
     @property
     def digital_roller(self) -> bool:
         return self.use_roller_chk.isChecked()
+
+    @property
+    def selected_theme(self) -> str:
+        return self.theme_combo.currentText()
 
     def add_player_slot(self, name=""):
         if len(self.player_inputs) < 8:
@@ -1482,7 +1527,7 @@ class GameOverDialog(QDialog):
 # SCORECARD
 # ============================================================================
 class YahtzeeScorecard(QMainWindow):
-    def __init__(self, players, use_digital_roller: bool = False):
+    def __init__(self, players, use_digital_roller: bool = False, initial_theme: str = "Classic"):
         super().__init__()
         self.players               = players
         self.current_turn_index    = 0
@@ -1496,6 +1541,7 @@ class YahtzeeScorecard(QMainWindow):
         self._roller               = None   # YahtzeeRollerWidget, created on demand
         self._roller_active        = False
         self._roller_dice          = None   # list[int] once roller confirms, None otherwise
+        self._initial_theme        = initial_theme
 
         self.setWindowTitle("Yahtzii! Pro Scorecard")
         self.resize(1100, 900)
@@ -1548,6 +1594,7 @@ class YahtzeeScorecard(QMainWindow):
             self.open_roller_btn.clicked.connect(self._open_roller_for_current_player)
             btns.addWidget(self.open_roller_btn)
 
+
         layout.addLayout(btns)
 
         # Status bar
@@ -1579,11 +1626,14 @@ class YahtzeeScorecard(QMainWindow):
         self._streak_count   = 0
         self._last_score_msg = ""
 
-        # Theme-derived colours used by dropdown styling (updated by apply_roller_theme)
+        # Apply initial theme immediately so colours are correct from the first frame
+        # Safe defaults — immediately overwritten by apply_roller_theme below
         self._theme_accent    = CLR_ACCENT
         self._theme_unclaimed = CLR_UNCLAIMED
         self._theme_active    = CLR_ACTIVE_UNCLAIMED
         self._theme_bg        = CLR_BACKGROUND
+        self._theme_table_bg  = CLR_TABLE
+        self.apply_roller_theme(self._initial_theme)
 
         self.update_turn_ui()
 
@@ -1600,6 +1650,8 @@ class YahtzeeScorecard(QMainWindow):
             self._roller.on_turn_done     = self._on_roller_done
             self._roller.on_window_hidden = self._on_roller_hidden
             self._roller.on_theme_changed = self.apply_roller_theme
+            # Sync roller to the theme chosen at registration
+            self._roller._set_theme(self._initial_theme)
 
         player_name = self.players[self.current_turn_index]
 
@@ -1744,6 +1796,18 @@ class YahtzeeScorecard(QMainWindow):
                 background-color: {unclaimed}; color: #F1F5F9;
                 border: 1px solid {active_unc}; border-radius: 3px; padding: 2px;
             }}
+            QComboBox::drop-down {{ border: none; background-color: {unclaimed}; }}
+            QComboBox::down-arrow {{ width: 10px; height: 10px; }}
+            QComboBox QAbstractItemView {{
+                background-color: {table_bg}; color: #F1F5F9;
+                border: 1px solid {active_unc};
+                selection-background-color: {accent};
+                selection-color: #000000; outline: none;
+            }}
+            QComboBox QAbstractItemView::item {{ padding: 4px 8px; min-height: 24px; }}
+            QComboBox QAbstractItemView::item:hover {{
+                background-color: {active_unc}; color: #F1F5F9;
+            }}
             QPushButton {{
                 background-color: {unclaimed}; color: #F1F5F9;
                 border-radius: 4px; padding: 10px; font-weight: bold;
@@ -1754,10 +1818,11 @@ class YahtzeeScorecard(QMainWindow):
         self.setStyleSheet(stylesheet)
 
         # Cache derived colours so update_turn_ui can use them for dropdowns
-        self._theme_accent   = accent
+        self._theme_accent    = accent
         self._theme_unclaimed = unclaimed
-        self._theme_active   = active_unc
-        self._theme_bg       = bg
+        self._theme_active    = active_unc
+        self._theme_bg        = bg
+        self._theme_table_bg  = table_bg
 
         # Restyle the Open Roller button to use the theme gradient
         if hasattr(self, "open_roller_btn"):
@@ -1773,6 +1838,12 @@ class YahtzeeScorecard(QMainWindow):
 
         # Full table repaint so cell colours pick up the new palette
         self.update_turn_ui()
+
+    def _on_scorecard_theme_changed(self, theme_name: str):
+        """Theme picker in the scorecard drives both the scorecard and the roller."""
+        self.apply_roller_theme(theme_name)
+        if self._roller is not None:
+            self._roller._set_theme(theme_name)
 
     # ----------------------------------------------------------- clock ------
     def _tick_clock(self):
@@ -2303,15 +2374,15 @@ class YahtzeeScorecard(QMainWindow):
                 item.setToolTip(tt)
                 if widget: widget.setToolTip(tt)
 
-                if widget:
+                if widget and isinstance(widget, QComboBox):
                     txt = (CLR_ZERO_FG  if roller_zero
                            else "#4A5568"  if joker_blocked
                            else CLR_CLAIMED_TEXT if status == "claimed"
                            else "white")
-                    # Full QComboBox theming: cell bg + popup + arrow all match theme
                     accent_c   = self._theme_accent
-                    popup_bg   = self._theme_bg
+                    popup_bg   = self._theme_table_bg
                     popup_sel  = self._theme_active
+                    # Style the combo box itself
                     widget.setStyleSheet(f"""
                         QComboBox {{
                             background-color: {bg};
@@ -2330,17 +2401,38 @@ class YahtzeeScorecard(QMainWindow):
                             border-right: 4px solid transparent;
                             border-top: 5px solid {txt};
                         }}
-                        QComboBox QAbstractItemView {{
+                    """)
+                    # The popup is a separate top-level window — stylesheet rules
+                    # like "QComboBox QAbstractItemView" on the combo itself are
+                    # ignored. We must style view() directly AND set its palette,
+                    # because Qt's Fusion style uses QPalette.Highlight (system
+                    # blue) for selection colour even when a stylesheet is present.
+                    view = widget.view()
+                    view.setStyleSheet(f"""
+                        QAbstractItemView {{
                             background-color: {popup_bg};
                             color: #F1F5F9;
-                            selection-background-color: {popup_sel};
-                            selection-color: #F1F5F9;
+                            selection-background-color: {accent_c};
+                            selection-color: #000000;
                             border: 1px solid {accent_c};
                             outline: none;
                         }}
+                        QAbstractItemView::item {{
+                            padding: 4px 8px;
+                            min-height: 22px;
+                        }}
+                        QAbstractItemView::item:hover {{
+                            background-color: {popup_sel};
+                            color: #F1F5F9;
+                        }}
                     """)
-                    if r != 15:
-                        widget.setEnabled(is_active and not joker_blocked)
+                    pal = view.palette()
+                    pal.setColor(QPalette.ColorGroup.All, QPalette.ColorRole.Base,            QColor(popup_bg))
+                    pal.setColor(QPalette.ColorGroup.All, QPalette.ColorRole.Text,            QColor("#F1F5F9"))
+                    pal.setColor(QPalette.ColorGroup.All, QPalette.ColorRole.Highlight,       QColor(accent_c))
+                    pal.setColor(QPalette.ColorGroup.All, QPalette.ColorRole.HighlightedText, QColor("#000000"))
+                    view.setPalette(pal)
+                    widget.setEnabled(is_active and not joker_blocked)
 
         self.update_status_bar()
 
@@ -2548,11 +2640,12 @@ if __name__ == "__main__":
     ordered_names    = None
     prefill_names    = None
     use_roller_carry = False
+    theme_carry      = "Classic"
 
     while True:
         # --- Registration ---
         if ordered_names is None:
-            setup = PlayerSetupDialog(prefill=prefill_names)
+            setup = PlayerSetupDialog(prefill=prefill_names, initial_theme=theme_carry)
             prefill_names = None
             if not setup.exec():
                 break
@@ -2561,6 +2654,7 @@ if __name__ == "__main__":
                 for idx, (_, i) in enumerate(setup.player_inputs)
             ]
             use_roller_carry = setup.digital_roller
+            theme_carry      = setup.selected_theme
         else:
             names = ordered_names
 
@@ -2574,7 +2668,7 @@ if __name__ == "__main__":
             ordered_names = names
 
         # --- Game ---
-        w      = YahtzeeScorecard(ordered_names, use_digital_roller=use_roller_carry)
+        w      = YahtzeeScorecard(ordered_names, use_digital_roller=use_roller_carry, initial_theme=theme_carry)
         w.loop = QEventLoop()
         w.show()
         if use_roller_carry:
@@ -2588,13 +2682,14 @@ if __name__ == "__main__":
             prefill_names    = ordered_names
             ordered_names    = None
             use_roller_carry = False   # let them choose again at registration
+            # theme_carry preserved so registration pre-selects the last theme
             continue
 
         if not getattr(w, 'roll_for_order', False) or len(ordered_names) == 1:
             # Same Order — skip registration and rolloff entirely
             w2_names = ordered_names
             while True:
-                w2      = YahtzeeScorecard(w2_names, use_digital_roller=use_roller_carry)
+                w2      = YahtzeeScorecard(w2_names, use_digital_roller=use_roller_carry, initial_theme=theme_carry)
                 w2.loop = QEventLoop()
                 w2.show()
                 if use_roller_carry:
