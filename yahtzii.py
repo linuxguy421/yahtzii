@@ -756,7 +756,7 @@ class YahtzeeRollerWidget(QWidget):
         self.roll_button.setEnabled(False)
         if self.scorecard_mode:
             self.use_dice_btn.setEnabled(False)
-        self.status_label.setText("Charging...")
+        self.status_label.setText("Blowing Dice...")
         self.timer.start()
 
     def _update_animation(self):
