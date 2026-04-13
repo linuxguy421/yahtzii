@@ -1004,6 +1004,20 @@ class YahtzeeRollerWidget(QWidget):
         for player, d, l, s in self.history:
             self.history_layout.addWidget(RollerHistoryRow(player, d, l, s, accent))
 
+    def update_last_history_label(self, category: str, pts: int):
+        """Replace the top history entry's label/score with the actual scorecard category chosen."""
+        if not self.history:
+            return
+        player, dice, _, _ = self.history[0]
+        self.history[0] = (player, dice, category, pts)
+        while self.history_layout.count():
+            item = self.history_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        accent = _ROLLER_THEMES[self.current_theme]["accent"]
+        for p, d, l, s in self.history:
+            self.history_layout.addWidget(RollerHistoryRow(p, d, l, s, accent))
+
     def _new_round(self):
         self.timer.stop()
         self._bounce_timer.stop()
@@ -1029,6 +1043,11 @@ class YahtzeeRollerWidget(QWidget):
 
     # --------------------------------- scorecard integration ----------------
     def _confirm_dice(self):
+        # Record history if the player finishes early (rolls_left > 0)
+        # When rolls_left == 0 it was already recorded in _finish_roll.
+        if self.rolls_left > 0:
+            label, pts = _roller_score(self.dice)
+            self._add_history(list(self.dice), label, pts)
         if self.on_turn_done:
             self.on_turn_done(list(self.dice))
 
@@ -2080,9 +2099,16 @@ class YahtzeeScorecard(QMainWindow):
             self.recalc(c); self.update_turn_ui()
         elif status == "unclaimed":
             self._correction_replaced_msg = ""
+            roll_info = ""
+            if self.use_digital_roller and self._roller_dice is not None:
+                faces = "  ".join(str(d) for d in self._roller_dice)
+                roll_info = f"  [{faces}] →"
             self._last_score_msg = (
-                f"Last score: {self.players[c]} → {ROW_LABELS[r]}  {score} pts"
+                f"Last score: {self.players[c]}{roll_info} {ROW_LABELS[r]}  {score} pts"
             )
+            # Update the roller history so it shows the actual category scored
+            if self.use_digital_roller and self._roller is not None:
+                self._roller.update_last_history_label(ROW_LABELS[r], score)
             self._update_streak(c, score)
             self.recalc(c); self.advance_to_next_player()
         else:
