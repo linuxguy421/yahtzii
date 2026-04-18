@@ -19,7 +19,7 @@ from collections import Counter, defaultdict
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
-    QMessageBox, QDialog, QScrollArea, QHeaderView, QComboBox,
+    QMessageBox, QDialog, QScrollArea, QHeaderView, QComboBox, QMenu,
     QTextEdit, QStatusBar, QCheckBox, QFrame, QProgressBar,
     QSizePolicy,
 )
@@ -89,6 +89,111 @@ DARK_STYLESHEET = f"""
     QCheckBox {{ color: #F1F5F9; }}
 """
 
+
+# ============================================================================
+# SCORE BUTTON  — QPushButton + QMenu replaces QComboBox for score cells.
+# QMenu is fully styleable; QComboBox popups ignore stylesheets on Linux.
+# ============================================================================
+class ScoreButton(QPushButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._options   = []
+        self._current   = "-"
+        self._accent    = "#3B82F6"
+        self._bg        = "#161B27"
+        self._hover_bg  = "#253354"
+        self._row       = -1
+        self._col       = -1
+        self._on_change = None
+        self.setFlat(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clicked.connect(self._show_menu)
+
+    def addItems(self, items):
+        self._options = list(items)
+        self._current = self._options[0] if self._options else "-"
+        self._refresh_text()
+
+    def clear(self):
+        self._options = []
+        self._current = "-"
+        self._refresh_text()
+
+    def currentText(self):
+        return self._current
+
+    def setCurrentIndex(self, idx):
+        if 0 <= idx < len(self._options):
+            self._current = self._options[idx]
+            self._refresh_text()
+
+    def findText(self, text):
+        try:    return self._options.index(text)
+        except: return -1
+
+    def setProperty(self, name, value):
+        if   name == "row": self._row = value
+        elif name == "col": self._col = value
+        else: super().setProperty(name, value)
+
+    def property(self, name):
+        if name == "row": return self._row
+        if name == "col": return self._col
+        return super().property(name)
+
+    def connect_change(self, callback):
+        self._on_change = callback
+
+    def set_theme_colors(self, accent, bg, hover_bg):
+        self._accent   = accent
+        self._bg       = bg
+        self._hover_bg = hover_bg
+
+    def apply_cell_style(self, bg_color, text_color):
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {bg_color};
+                color: {text_color};
+                border: none;
+                padding: 1px 4px;
+                text-align: left;
+            }}
+            QPushButton:hover {{ background-color: {self._hover_bg}; }}
+        """)
+
+    def _refresh_text(self):
+        self.setText(f"{self._current}  ▾")
+
+    def _show_menu(self):
+        if not self._options or not self.isEnabled():
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {self._bg};
+                color: #F1F5F9;
+                border: 1px solid {self._accent};
+                padding: 2px;
+            }}
+            QMenu::item {{ padding: 4px 16px; min-width: 60px; }}
+            QMenu::item:selected {{
+                background-color: {self._accent};
+                color: #000000;
+            }}
+        """)
+        for opt in self._options:
+            menu.addAction(opt).setData(opt)
+        chosen = menu.exec(self.mapToGlobal(self.rect().bottomLeft()))
+        if chosen is not None:
+            new_text = chosen.data()
+            old_idx  = self.findText(self._current)
+            new_idx  = self.findText(new_text)
+            self._current = new_text
+            self._refresh_text()
+            if self._on_change and new_idx != old_idx:
+                self._on_change(new_idx, self)
+
+
 # ============================================================================
 # SCORECARD CONSTANTS
 # ============================================================================
@@ -124,8 +229,12 @@ _ROLLER_THEMES = {
     "Ocean":   {"bg": "#0a1628", "accent": "#38bdf8", "bar_start": "#0ea5e9", "bar_end": "#38bdf8"},
     "Sunset":  {"bg": "#2d1b0e", "accent": "#fb923c", "bar_start": "#f97316", "bar_end": "#fbbf24"},
     "Storm":   {"bg": "#1a1a1a", "accent": "#a78bfa", "bar_start": "#7c3aed", "bar_end": "#a78bfa"},
+    "Neon":    {"bg": "#0b0b0f", "accent": "#22d3ee", "bar_start": "#06b6d4", "bar_end": "#a21caf"},
+    "Lava":    {"bg": "#220a0a", "accent": "#ef4444", "bar_start": "#dc2626", "bar_end": "#f97316"},
+    "Gold":    {"bg": "#1f1700", "accent": "#facc15", "bar_start": "#eab308", "bar_end": "#fde047"},
+    "Arctic":  {"bg": "#0b1b24", "accent": "#67e8f9", "bar_start": "#0891b2", "bar_end": "#cffafe"},
+    "Cyber":   {"bg": "#12091f", "accent": "#c084fc", "bar_start": "#9333ea", "bar_end": "#ec4899"},
 }
-
 
 def _make_roller_svg(face: int, dot_color: str = "#ffffff") -> bytes:
     path = _ROLLER_SVG_PATHS[face]
@@ -1150,26 +1259,26 @@ class RulesDialog(QDialog):
         layout.addWidget(close_btn)
 
 
-# ============================================================================
-# REGISTRATION DIALOG  (+ Digital Roller checkbox)
-# ============================================================================
 class PlayerSetupDialog(QDialog):
     def __init__(self, prefill=None, initial_theme="Classic"):
         super().__init__()
         self.setWindowTitle("Yahtzii Registration")
-        self.setFixedSize(420, 630)
-        self.player_inputs = []
+        self.setFixedSize(420, 650)
+        self.player_inputs   = []
+        self._selected_theme = initial_theme if initial_theme in _ROLLER_THEMES else "Classic"
+        self._theme_btns     = {}
         layout = QVBoxLayout(self)
+        layout.setSpacing(8)
 
         header = QLabel("Player Registration")
         header.setFont(QFont("Arial", 14, QFont.Weight.Bold))
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(header)
 
-        hint = QLabel("💡 If rolling manually, enter players in desired turn order.")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint.setStyleSheet("color: #64748B; font-size: 11px; padding-bottom: 4px;")
-        layout.addWidget(hint)
+        self.hint_lbl = QLabel("💡 If rolling manually, enter players in desired turn order.")
+        self.hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hint_lbl.setStyleSheet("font-size: 11px; padding-bottom: 4px;")
+        layout.addWidget(self.hint_lbl)
 
         self.scroll_area   = QScrollArea()
         self.scroll_widget = QWidget()
@@ -1178,91 +1287,184 @@ class PlayerSetupDialog(QDialog):
         self.scroll_area.setWidgetResizable(True)
         layout.addWidget(self.scroll_area)
 
-        for name in (prefill or [""]):
-            self.add_player_slot(name if name else "")
-        if not prefill:
-            pass   # already added one blank slot above
-
         btn_layout = QHBoxLayout()
-        add_btn = QPushButton("+ Add Player")
-        add_btn.clicked.connect(self.add_player_slot)
-        rem_btn = QPushButton("- Remove Player")
-        rem_btn.clicked.connect(self.remove_player_slot)
-        btn_layout.addWidget(add_btn)
-        btn_layout.addWidget(rem_btn)
+        self.add_btn = QPushButton("+ Add Player")
+        self.add_btn.clicked.connect(lambda _: self.add_player_slot())
+        self.rem_btn = QPushButton("- Remove Player")
+        self.rem_btn.clicked.connect(lambda _: self.remove_player_slot())
+        btn_layout.addWidget(self.add_btn)
+        btn_layout.addWidget(self.rem_btn)
         layout.addLayout(btn_layout)
 
-        # ── Digital Roller option ────────────────────────────────────────
-        roller_frame = QFrame()
-        roller_frame.setStyleSheet(
-            f"background: {CLR_UNCLAIMED}; border: 1px solid #2E3F60; border-radius: 6px;"
-        )
-        roller_inner = QVBoxLayout(roller_frame)
-        roller_inner.setContentsMargins(12, 10, 12, 10)
-        roller_inner.setSpacing(4)
+        for name in (prefill or [""]):
+            self.add_player_slot(name if name else "")
 
+        # ── Digital Roller ───────────────────────────────────────────────
+        self.roller_frame = QFrame()
+        self.roller_frame.setObjectName("innerFrame")
+        roller_inner = QVBoxLayout(self.roller_frame)
+        roller_inner.setContentsMargins(12, 10, 12, 10)
         self.use_roller_chk = QCheckBox("🎲  Use Digital Roller (fully digital experience)")
         self.use_roller_chk.setStyleSheet("font-weight: bold; font-size: 12px;")
-
         roller_inner.addWidget(self.use_roller_chk)
-        layout.addWidget(roller_frame)
-        # ────────────────────────────────────────────────────────────────
+        layout.addWidget(self.roller_frame)
 
         # ── Theme picker ─────────────────────────────────────────────────
-        theme_frame = QFrame()
-        theme_frame.setStyleSheet(
-            f"background: {CLR_UNCLAIMED}; border: 1px solid #2E3F60; border-radius: 6px;"
-        )
-        theme_inner = QHBoxLayout(theme_frame)
+        self.theme_frame = QFrame()
+        self.theme_frame.setObjectName("innerFrame")
+        theme_inner = QVBoxLayout(self.theme_frame)
         theme_inner.setContentsMargins(12, 10, 12, 10)
-        theme_lbl = QLabel("\U0001f3a8  Theme:")
-        theme_lbl.setStyleSheet("font-weight: bold; font-size: 12px; border: none;")
-        theme_inner.addWidget(theme_lbl)
-        self.theme_combo = QComboBox()
-        for tname in _ROLLER_THEMES:
-            self.theme_combo.addItem(tname)
-        if initial_theme in _ROLLER_THEMES:
-            self.theme_combo.setCurrentText(initial_theme)
-        self.theme_combo.setMinimumWidth(130)
-        theme_inner.addWidget(self.theme_combo)
-        theme_inner.addStretch()
-        layout.addWidget(theme_frame)
-        # ────────────────────────────────────────────────────────────────
+        theme_inner.setSpacing(6)
+
+        self.theme_title_lbl = QLabel("🎨  Theme:")
+        self.theme_title_lbl.setStyleSheet("font-weight: bold; font-size: 12px;")
+        theme_inner.addWidget(self.theme_title_lbl)
+
+        self.theme_row_1 = QHBoxLayout()
+        self.theme_row_1.setSpacing(5)
+        self.theme_row_2 = QHBoxLayout()
+        self.theme_row_2.setSpacing(5)
+
+        theme_names = list(_ROLLER_THEMES.keys())
+        for i, tname in enumerate(theme_names):
+            btn = QPushButton(tname)
+            btn.setFixedHeight(28)
+            btn.setMinimumWidth(72)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _, n=tname: self._pick_theme(n))
+            self._theme_btns[tname] = btn
+
+            if i < 5:
+                self.theme_row_1.addWidget(btn)
+            else:
+                self.theme_row_2.addWidget(btn)
+
+        theme_inner.addLayout(self.theme_row_1)
+        theme_inner.addLayout(self.theme_row_2)
+        layout.addWidget(self.theme_frame)
 
         self.next_btn = QPushButton("Next: Determine Order")
-        self.next_btn.setStyleSheet(accent_btn_style())
         self.next_btn.clicked.connect(self.accept)
         layout.addWidget(self.next_btn)
 
-    @property
-    def digital_roller(self) -> bool:
-        return self.use_roller_chk.isChecked()
+        self._apply_theme(self._selected_theme)
 
-    @property
-    def selected_theme(self) -> str:
-        return self.theme_combo.currentText()
+    def _pick_theme(self, name: str):
+        self._selected_theme = name
+        self._apply_theme(name)
+
+    def _apply_theme(self, name: str):
+        import colorsys
+        th     = _ROLLER_THEMES[name]
+        bg     = th["bg"]
+        accent = th["accent"]
+        start  = th["bar_start"]
+        end    = th["bar_end"]
+
+        def _darken(hx, f):
+            hx = hx.lstrip("#")
+            r, g, b = (int(hx[i:i+2], 16) / 255 for i in (0, 2, 4))
+            h, s, v = colorsys.rgb_to_hsv(r, g, b)
+            r2, g2, b2 = colorsys.hsv_to_rgb(h, s, v * f)
+            return "#{:02x}{:02x}{:02x}".format(int(r2 * 255), int(g2 * 255), int(b2 * 255))
+
+        cell   = _darken(bg, 1.40)
+        active = _darken(bg, 1.65)
+        table  = _darken(bg, 1.15) if bg != "#1a1a1a" else "#1e1e1e"
+
+        self.setStyleSheet(f"""
+            QDialog                  {{ background-color: {bg}; color: #F1F5F9; }}
+            QWidget                  {{ background-color: {bg}; color: #F1F5F9; }}
+            QScrollArea              {{ background-color: {bg}; border: none; }}
+            QAbstractScrollArea      {{ background-color: {bg}; }}
+            QAbstractScrollArea > QWidget > QWidget {{ background-color: {bg}; }}
+            QLineEdit                {{ background-color: {cell}; color: #F1F5F9;
+                                        border: 1px solid {active}; border-radius: 3px;
+                                        padding: 4px; }}
+            QCheckBox                {{ color: #F1F5F9; background: transparent; }}
+            QFrame#innerFrame        {{ background-color: {table}; border: 1px solid {active};
+                                        border-radius: 6px; }}
+            QPushButton              {{ background-color: {cell}; color: #F1F5F9;
+                                        border-radius: 4px; padding: 6px 10px;
+                                        font-weight: bold; border: none; }}
+            QPushButton:hover        {{ background-color: {active}; }}
+        """)
+
+        self.next_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 {start}, stop:1 {end});
+                color: white; border-radius: 4px;
+                padding: 10px; font-weight: bold; font-size: 13px;
+            }}
+            QPushButton:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                stop:0 {end}, stop:1 {start}); }}
+        """)
+
+        for tname, btn in self._theme_btns.items():
+            if tname == name:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: rgba(255,255,255,0.12);
+                        color: {accent};
+                        border: 2px solid {accent};
+                        border-radius: 10px;
+                        font-size: 10px;
+                        font-weight: bold;
+                        padding: 4px 6px;
+                    }}
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(255,255,255,0.05);
+                        color: #F1F5F9;
+                        border: 1px solid rgba(255,255,255,0.18);
+                        border-radius: 10px;
+                        font-size: 10px;
+                        font-weight: bold;
+                        padding: 4px 6px;
+                    }
+                    QPushButton:hover {
+                        background: rgba(255,255,255,0.12);
+                    }
+                """)
 
     def add_player_slot(self, name=""):
-        if len(self.player_inputs) < 8:
-            row_widget = QWidget()
-            row_layout = QHBoxLayout(row_widget)
-            inp = QLineEdit()
-            inp.setPlaceholderText(f"Player {len(self.player_inputs) + 1}")
-            if name:
-                inp.setText(name)
-            row_layout.addWidget(inp)
-            self.input_layout.addWidget(row_widget)
-            self.player_inputs.append((row_widget, inp))
+        if isinstance(name, bool) or name is None:
+            name = ""
+        elif not isinstance(name, str):
+            name = str(name)
 
-    def remove_player_slot(self):
-        if len(self.player_inputs) > 1:
-            row_widget, _ = self.player_inputs.pop()
-            row_widget.deleteLater()
+        if len(self.player_inputs) >= 8:
+            QMessageBox.warning(self, "Max Players", "Maximum of 8 players allowed.")
+            return
+        row = QHBoxLayout()
+        label = QLabel(f"Player {len(self.player_inputs) + 1}:")
+        entry = QLineEdit()
+        entry.setText(name)
+        row.addWidget(label)
+        row.addWidget(entry)
+        self.input_layout.addLayout(row)
+        self.player_inputs.append((label, entry))
 
+    def remove_player_slot(self, checked=False):
+        if len(self.player_inputs) <= 1:
+            QMessageBox.warning(self, "Minimum Players", "At least one player is required.")
+            return
+        label, entry = self.player_inputs.pop()
+        label.deleteLater()
+        entry.deleteLater()
 
-# ============================================================================
-# ROLL-OFF DIALOG
-# ============================================================================
+    def get_players(self):
+        return [entry.text().strip() for _, entry in self.player_inputs if entry.text().strip()]
+
+    def use_digital_roller_enabled(self):
+        return self.use_roller_chk.isChecked()
+
+    def selected_theme(self):
+        return self._selected_theme
+
 class RollOffDialog(QDialog):
     def __init__(self, names):
         super().__init__()
@@ -1548,6 +1750,15 @@ class GameOverDialog(QDialog):
 class YahtzeeScorecard(QMainWindow):
     def __init__(self, players, use_digital_roller: bool = False, initial_theme: str = "Classic"):
         super().__init__()
+
+        # ── REQUIRED: all theme vars must exist before setup_board() ──
+        self._theme_accent    = CLR_ACCENT
+        self._theme_table_bg  = CLR_TABLE
+        self._theme_active    = CLR_ACTIVE_UNCLAIMED
+        self._theme_unclaimed = CLR_UNCLAIMED
+        self._theme_bg        = CLR_BACKGROUND
+        self._current_theme_name = initial_theme
+
         self.players               = players
         self.current_turn_index    = 0
         self.play_again_requested  = False
@@ -1836,6 +2047,48 @@ class YahtzeeScorecard(QMainWindow):
         """
         self.setStyleSheet(stylesheet)
 
+        # Also update the application-level stylesheet so that QComboBox popup
+        # windows (which are top-level and inherit app styles, not window styles)
+        # use the correct theme accent instead of always defaulting to blue.
+        app = QApplication.instance()
+        if app is not None:
+            app_stylesheet = f"""
+                QMainWindow, QDialog, QWidget {{ background-color: {bg}; color: #F1F5F9; }}
+                QTableWidget {{
+                    background-color: {table_bg}; color: #F1F5F9;
+                    gridline-color: {unclaimed}; border: 1px solid {unclaimed};
+                }}
+                QHeaderView::section {{
+                    background-color: {header_bg}; color: {accent};
+                    padding: 5px; border: 1px solid {unclaimed}; font-weight: bold;
+                }}
+                QComboBox, QLineEdit {{
+                    background-color: {unclaimed}; color: #F1F5F9;
+                    border: 1px solid {active_unc}; border-radius: 3px; padding: 2px;
+                }}
+                QComboBox::drop-down {{ border: none; background-color: {unclaimed}; }}
+                QComboBox::down-arrow {{ width: 10px; height: 10px; }}
+                QComboBox QAbstractItemView {{
+                    background-color: {table_bg};
+                    color: #F1F5F9;
+                    border: 1px solid {active_unc};
+                    selection-background-color: {accent};
+                    selection-color: #000000;
+                    outline: none;
+                }}
+                QComboBox QAbstractItemView::item {{ padding: 4px 8px; min-height: 24px; }}
+                QComboBox QAbstractItemView::item:hover {{
+                    background-color: {active_unc}; color: #F1F5F9;
+                }}
+                QPushButton {{
+                    background-color: {unclaimed}; color: #F1F5F9;
+                    border-radius: 4px; padding: 10px; font-weight: bold;
+                }}
+                QPushButton:hover {{ background-color: {active_unc}; }}
+                QCheckBox {{ color: #F1F5F9; }}
+            """
+            app.setStyleSheet(app_stylesheet)
+
         # Cache derived colours so update_turn_ui can use them for dropdowns
         self._theme_accent    = accent
         self._theme_unclaimed = unclaimed
@@ -1900,8 +2153,8 @@ class YahtzeeScorecard(QMainWindow):
                 item.setData(Qt.ItemDataRole.UserRole, "unclaimed")
                 if r in CALCULATED_ROWS:
                     item.setText("0"); item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-                    item.setBackground(QColor(CLR_TOTAL_BG))
-                    item.setForeground(QBrush(QColor(CLR_ACCENT)))
+                    item.setBackground(QColor(self._theme_bg))
+                    item.setForeground(QBrush(QColor(self._theme_accent)))
                 elif r in UPPER_SECTION:
                     self.add_dropdown(r, c, ["-", "0", "1", "2", "3", "4", "5"])
                 elif r == 15:
@@ -1911,7 +2164,7 @@ class YahtzeeScorecard(QMainWindow):
                 elif r in [9, 10, 16]:
                     self.add_dropdown(r, c, ["-", "0"] + [str(i) for i in range(5, 31)])
                 else:
-                    item.setBackground(QColor(CLR_UNCLAIMED))
+                    item.setBackground(QColor(self._theme_unclaimed))
                 self.table.setItem(r, c, item)
         self.table.blockSignals(False)
 
@@ -1928,17 +2181,18 @@ class YahtzeeScorecard(QMainWindow):
         self.table.setItem(r, c, item)
 
     def add_dropdown(self, r, c, options):
-        combo = QComboBox()
-        combo.addItems(options)
-        combo.setProperty("row", r); combo.setProperty("col", c)
-        combo.currentIndexChanged.connect(self.handle_dropdown)
-        self.table.setCellWidget(r, c, combo)
+        btn = ScoreButton()
+        btn.addItems(options)
+        btn.setProperty("row", r); btn.setProperty("col", c)
+        btn.set_theme_colors(self._theme_accent, self._theme_table_bg, self._theme_active)
+        btn.connect_change(self.handle_dropdown)
+        self.table.setCellWidget(r, c, btn)
 
     def _update_upper_dropdowns(self, c):
         is_active = (c == self.current_turn_index)
         for r in UPPER_SECTION:
             combo = self.table.cellWidget(r, c)
-            if not combo or not isinstance(combo, QComboBox): continue
+            if not combo or not isinstance(combo, ScoreButton): continue
             if self.table.item(r, c).data(Qt.ItemDataRole.UserRole) == "claimed": continue
             self._is_updating = True
             current = combo.currentText(); combo.clear()
@@ -1977,7 +2231,7 @@ class YahtzeeScorecard(QMainWindow):
         lock_rows = {9, 10, 11, 12, 13, 14, 16}
         for r in lock_rows:
             combo = self.table.cellWidget(r, c)
-            if not combo or not isinstance(combo, QComboBox): continue
+            if not combo or not isinstance(combo, ScoreButton): continue
             if self.table.item(r, c).data(Qt.ItemDataRole.UserRole) == "claimed": continue
             self._is_updating = True
             current = combo.currentText(); combo.clear()
@@ -2067,9 +2321,10 @@ class YahtzeeScorecard(QMainWindow):
                 self._streak_player = None
                 self._streak_count  = 0
 
-    def handle_dropdown(self, index):
+    def handle_dropdown(self, index, btn=None):
         if self._is_updating: return
-        combo = self.sender()
+        combo = btn if btn is not None else self.sender()
+        if combo is None: return
         r, c  = combo.property("row"), combo.property("col")
         self._is_updating = True
         item   = self.table.item(r, c)
@@ -2334,8 +2589,8 @@ class YahtzeeScorecard(QMainWindow):
                 status = item.data(Qt.ItemDataRole.UserRole)
 
                 # Base background
-                bg = (CLR_TABLE if status == "claimed"
-                      else CLR_ACTIVE_UNCLAIMED if is_active else CLR_UNCLAIMED)
+                bg = (self._theme_table_bg if status == "claimed"
+                      else self._theme_active if is_active else self._theme_unclaimed)
 
                 roller_zero    = False
                 joker_blocked  = False
@@ -2344,7 +2599,7 @@ class YahtzeeScorecard(QMainWindow):
                     if joker_roller_state == "must_upper":
                         # Step ①: only the matching upper row is valid
                         if r == joker_upper_r:
-                            bg = CLR_ACTIVE_UNCLAIMED   # highlight it
+                            bg = self._theme_active   # highlight it
                         elif r in PRIMARY_CATEGORIES:
                             bg = CLR_DISABLED
                             joker_blocked = True
@@ -2352,7 +2607,7 @@ class YahtzeeScorecard(QMainWindow):
                     elif joker_roller_state == "use_lower":
                         # Step ②: any open lower box is valid; upper is dimmed
                         if r in LOWER_SECTION_PRIMARY:
-                            bg = CLR_ACTIVE_UNCLAIMED
+                            bg = self._theme_active
                         elif r in UPPER_SECTION:
                             bg = CLR_DISABLED
                             joker_blocked = True
@@ -2400,64 +2655,17 @@ class YahtzeeScorecard(QMainWindow):
                 item.setToolTip(tt)
                 if widget: widget.setToolTip(tt)
 
-                if widget and isinstance(widget, QComboBox):
+                if widget and isinstance(widget, ScoreButton):
                     txt = (CLR_ZERO_FG  if roller_zero
                            else "#4A5568"  if joker_blocked
                            else CLR_CLAIMED_TEXT if status == "claimed"
                            else "white")
-                    accent_c   = self._theme_accent
-                    popup_bg   = self._theme_table_bg
-                    popup_sel  = self._theme_active
-                    # Style the combo box itself
-                    widget.setStyleSheet(f"""
-                        QComboBox {{
-                            background-color: {bg};
-                            color: {txt};
-                            border: none;
-                            padding: 1px 4px;
-                        }}
-                        QComboBox::drop-down {{
-                            border: none;
-                            width: 16px;
-                        }}
-                        QComboBox::down-arrow {{
-                            width: 8px; height: 8px;
-                            image: none;
-                            border-left: 4px solid transparent;
-                            border-right: 4px solid transparent;
-                            border-top: 5px solid {txt};
-                        }}
-                    """)
-                    # The popup is a separate top-level window — stylesheet rules
-                    # like "QComboBox QAbstractItemView" on the combo itself are
-                    # ignored. We must style view() directly AND set its palette,
-                    # because Qt's Fusion style uses QPalette.Highlight (system
-                    # blue) for selection colour even when a stylesheet is present.
-                    view = widget.view()
-                    view.setStyleSheet(f"""
-                        QAbstractItemView {{
-                            background-color: {popup_bg};
-                            color: #F1F5F9;
-                            selection-background-color: {accent_c};
-                            selection-color: #000000;
-                            border: 1px solid {accent_c};
-                            outline: none;
-                        }}
-                        QAbstractItemView::item {{
-                            padding: 4px 8px;
-                            min-height: 22px;
-                        }}
-                        QAbstractItemView::item:hover {{
-                            background-color: {popup_sel};
-                            color: #F1F5F9;
-                        }}
-                    """)
-                    pal = view.palette()
-                    pal.setColor(QPalette.ColorGroup.All, QPalette.ColorRole.Base,            QColor(popup_bg))
-                    pal.setColor(QPalette.ColorGroup.All, QPalette.ColorRole.Text,            QColor("#F1F5F9"))
-                    pal.setColor(QPalette.ColorGroup.All, QPalette.ColorRole.Highlight,       QColor(accent_c))
-                    pal.setColor(QPalette.ColorGroup.All, QPalette.ColorRole.HighlightedText, QColor("#000000"))
-                    view.setPalette(pal)
+                    widget.set_theme_colors(
+                        self._theme_accent,
+                        self._theme_table_bg,
+                        self._theme_active,
+                    )
+                    widget.apply_cell_style(bg, txt)
                     widget.setEnabled(is_active and not joker_blocked)
 
         self.update_status_bar()
@@ -2679,8 +2887,8 @@ if __name__ == "__main__":
                 i.text().strip() or f"P{idx+1}"
                 for idx, (_, i) in enumerate(setup.player_inputs)
             ]
-            use_roller_carry = setup.digital_roller
-            theme_carry      = setup.selected_theme
+            use_roller_carry = setup.use_digital_roller_enabled()
+            theme_carry      = setup.selected_theme()
         else:
             names = ordered_names
 
