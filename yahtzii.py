@@ -647,12 +647,14 @@ class YahtzeeRollerWidget(QWidget):
     ROLL_DURATION_MAX= 1200
     TICK_MS          = 16
 
-    def __init__(self, scorecard_mode: bool = False, parent=None):
+    def __init__(self, scorecard_mode: bool = False, embedded_mode: bool = False, parent=None):
         super().__init__(parent)
         self.scorecard_mode = scorecard_mode
-        self.setWindowTitle("Pro Yahtzii Roller")
-        h = 780 if scorecard_mode else 720
-        self.setFixedSize(520, h)
+        self.embedded_mode  = embedded_mode
+        if not embedded_mode:
+            self.setWindowTitle("Pro Yahtzii Roller")
+            h = 780 if scorecard_mode else 720
+            self.setFixedSize(520, h)
         self.setAutoFillBackground(True)
 
         self.dice          = [1, 1, 1, 1, 1]
@@ -1117,7 +1119,10 @@ class YahtzeeRollerWidget(QWidget):
             self.roll_button.setEnabled(False)
             self.hold_hint.hide()
             if self.scorecard_mode:
-                self.use_dice_btn.setEnabled(True)
+                # All 3 rolls used — confirm automatically, no button press needed
+                self._confirm_dice()
+            else:
+                pass  # standalone roller: nothing extra to do
         else:
             rolls_word = "roll" if self.rolls_left == 1 else "rolls"
             self.status_label.setText(
@@ -1259,11 +1264,11 @@ class YahtzeeRollerWidget(QWidget):
 
     def closeEvent(self, event):
         """
-        In scorecard mode, closing the window just hides it so the roll state
-        is preserved.  The scorecard's 'Open Roller' button will re-show it.
-        The scorecard is notified so it can re-enable the button.
+        In scorecard mode (floating window), closing just hides it so roll
+        state is preserved.  In embedded mode there is no close button, so
+        this path is never reached from normal user interaction.
         """
-        if self.scorecard_mode:
+        if self.scorecard_mode and not self.embedded_mode:
             event.ignore()
             self.hide()
             if callable(self.on_window_hidden):
@@ -1298,16 +1303,15 @@ class RulesDialog(QDialog):
 
             <h3 style='color: #93C5FD;'>Digital Roller Mode</h3>
             <ol>
-                <li>The roller window opens automatically at the start of each turn, showing
-                    whose turn it is.</li>
+                <li>The roller panel is shown on the right side of the scorecard automatically
+                    at the start of each turn, showing whose turn it is.</li>
                 <li>Press <b>ROLL</b> (hold to charge the power bar). Click any dice to
                     <b>hold</b> them, then press <b>ROLL</b> again (up to 3 rolls total).</li>
                 <li>You may confirm at any point — you don't have to use all 3 rolls.</li>
                 <li>Click <b>Done — Use These Dice</b> to lock in the roll. The scorecard
                     unlocks and you choose a category normally.</li>
             </ol>
-            <p>The <b>🎲 Open Roller</b> button on the scorecard lets you re-open the roller
-            window at any time during your turn if you accidentally close it.</p>
+
 
             <h3 style='color: #93C5FD;'>Physical Dice Mode</h3>
             <p>Roll your own dice, then select a score from the dropdown in your column.</p>
@@ -2061,11 +2065,20 @@ class YahtzeeScorecard(QMainWindow):
         self._initial_theme        = initial_theme
 
         self.setWindowTitle("Yahtzii! Pro Scorecard")
-        self.resize(1100, 900)
-        container = QWidget()
-        self.setCentralWidget(container)
-        layout = QVBoxLayout(container)
+
+        # ── Root widget: horizontal splitter when roller is embedded ─────────
+        from PyQt6.QtWidgets import QSplitter
+        root_widget = QWidget()
+        self.setCentralWidget(root_widget)
+        root_h = QHBoxLayout(root_widget)
+        root_h.setContentsMargins(0, 0, 0, 0)
+        root_h.setSpacing(0)
+
+        # ── LEFT PANE — scorecard proper ─────────────────────────────────────
+        sc_pane = QWidget()
+        layout  = QVBoxLayout(sc_pane)
         layout.setSpacing(0)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Top bar
         top_bar = QHBoxLayout()
@@ -2105,14 +2118,44 @@ class YahtzeeScorecard(QMainWindow):
         ]:
             b = QPushButton(text); b.clicked.connect(slot); btns.addWidget(b)
 
-        if self.use_digital_roller:
-            self.open_roller_btn = QPushButton("🎲 Open Roller")
-            self.open_roller_btn.setStyleSheet(accent_btn_style())
-            self.open_roller_btn.clicked.connect(self._open_roller_for_current_player)
-            btns.addWidget(self.open_roller_btn)
-
-
         layout.addLayout(btns)
+
+        # ── Assemble: scorecard left, roller right (splitter) ────────────────
+        if self.use_digital_roller:
+            self._splitter = QSplitter(Qt.Orientation.Horizontal)
+            self._splitter.setHandleWidth(4)
+            self._splitter.setChildrenCollapsible(False)
+            self._splitter.addWidget(sc_pane)
+
+            # Build the embedded roller pane
+            self._roller_pane = QWidget()
+            self._roller_pane.setMinimumWidth(480)
+            self._roller_pane.setMaximumWidth(560)
+            roller_pane_layout = QVBoxLayout(self._roller_pane)
+            roller_pane_layout.setContentsMargins(0, 0, 0, 0)
+            roller_pane_layout.setSpacing(0)
+
+            # Create roller embedded inside the pane
+            self._roller = YahtzeeRollerWidget(
+                scorecard_mode=True,
+                embedded_mode=True,
+                parent=self._roller_pane,
+            )
+            self._roller.colored_dice       = self.colored_dice
+            self._roller.on_turn_done       = self._on_roller_done
+            self._roller.on_theme_changed   = self.apply_roller_theme
+            self._roller.score_hint_provider = self._best_open_score_for_dice
+            self._roller._set_theme(self._initial_theme)
+            roller_pane_layout.addWidget(self._roller)
+
+            self._splitter.addWidget(self._roller_pane)
+            self._splitter.setSizes([1100, 520])
+
+            root_h.addWidget(self._splitter)
+            self.resize(1640, 900)
+        else:
+            root_h.addWidget(sc_pane)
+            self.resize(1100, 900)
 
         # Status bar
         sb_widget    = QStatusBar()
@@ -2162,21 +2205,8 @@ class YahtzeeScorecard(QMainWindow):
 
     # -------------------------------------------------------- roller glue ---
     def _open_roller_for_current_player(self):
-        if self._roller is None:
-            self._roller = YahtzeeRollerWidget(scorecard_mode=True)
-            self._roller.colored_dice     = self.colored_dice
-            self._roller.on_turn_done     = self._on_roller_done
-            self._roller.on_window_hidden = self._on_roller_hidden
-            self._roller.on_theme_changed = self.apply_roller_theme
-            self._roller.score_hint_provider = self._best_open_score_for_dice
-            # Sync roller to the theme chosen at registration
-            self._roller._set_theme(self._initial_theme)
-
         player_name = self.players[self.current_turn_index]
 
-        # Reopen after accidental close: the player already has a confirmed roll
-        # (_roller_dice set) or is mid-roll (_roller_active was True when they
-        # closed the window).  Just re-show without resetting anything.
         is_reopen = self._roller_dice is not None or self._roller_active
 
         if not is_reopen:
@@ -2184,51 +2214,22 @@ class YahtzeeScorecard(QMainWindow):
             self._roller.prepare_for_player(player_name)
             self._roller_active = True
             self.table.setEnabled(False)
-            if hasattr(self, "open_roller_btn"):
-                self.open_roller_btn.setEnabled(False)
             self.turn_label.setText(
-                f"🎲 {player_name} is rolling… "
-                f"click 'Done — Use These Dice' in the roller window."
+                f"🎲 {player_name}'s turn — roll the dice, then click "
+                f"'Done — Use These Dice'."
             )
             self.turn_label.setStyleSheet(
                 f"color: {CLR_ACTIVE_TURN}; border: 2px solid {CLR_ACTIVE_TURN}44; "
                 f"padding: 6px; font-size: 11px;"
             )
             self.turn_label.setVisible(True)
-        else:
-            # Reopen — restore the correct banner depending on whether they
-            # have already confirmed dice or are still mid-roll.
-            if self._roller_dice is not None:
-                # Roll already confirmed; table should be unlocked
-                self.table.setEnabled(True)
-                if hasattr(self, "open_roller_btn"):
-                    self.open_roller_btn.setEnabled(True)
-            else:
-                # Still mid-roll; keep table locked
-                self.table.setEnabled(False)
-                if hasattr(self, "open_roller_btn"):
-                    self.open_roller_btn.setEnabled(False)
-                self.turn_label.setText(
-                    f"🎲 {player_name} is rolling… "
-                    f"click 'Done — Use These Dice' in the roller window."
-                )
-                self.turn_label.setStyleSheet(
-                    f"color: {CLR_ACTIVE_TURN}; border: 2px solid {CLR_ACTIVE_TURN}44; "
-                    f"padding: 6px; font-size: 11px;"
-                )
-                self.turn_label.setVisible(True)
 
-        self._roller.show()
-        self._roller.raise_()
-        self._roller.activateWindow()
 
     def _on_roller_done(self, dice: list):
         self._roller_active = False
-        self._roller.hide()
+        # Roller stays visible in the panel — no hide() needed
 
         self.table.setEnabled(True)
-        if hasattr(self, "open_roller_btn"):
-            self.open_roller_btn.setEnabled(True)
 
         self._roller_dice = dice   # drive row dimming in update_turn_ui
 
@@ -2246,28 +2247,6 @@ class YahtzeeScorecard(QMainWindow):
         self.turn_label.setVisible(True)
         self._last_score_msg = f"Rolled: [{faces}] — {label} {pts} pts"
         self.update_turn_ui()   # re-render table with dimming applied
-
-    def _on_roller_hidden(self):
-        """
-        Called when the player closes the roller window mid-turn (instead of
-        using the Done button).  Re-enable the Open Roller button so they can
-        get it back without losing their roll state.
-        """
-        if hasattr(self, "open_roller_btn"):
-            self.open_roller_btn.setEnabled(True)
-        # If they hadn't confirmed dice yet, unlock the table too so they're
-        # not stuck — they can reopen and finish rolling, or the button is
-        # there to bring the window back.
-        if self._roller_dice is None:
-            self.table.setEnabled(False)   # still waiting for a roll — keep locked
-            self.turn_label.setText(
-                f"🎲 Roller closed — click 'Open Roller' to continue rolling."
-            )
-            self.turn_label.setStyleSheet(
-                f"color: {CLR_INVALID}; border: 2px solid {CLR_INVALID}44; "
-                f"padding: 6px; font-size: 11px;"
-            )
-            self.turn_label.setVisible(True)
 
     def apply_roller_theme(self, theme_name: str):
         """
@@ -2385,15 +2364,6 @@ class YahtzeeScorecard(QMainWindow):
         self._theme_bg        = bg
         self._theme_table_bg  = table_bg
 
-        # Restyle the Open Roller button to use the theme gradient
-        if hasattr(self, "open_roller_btn"):
-            self.open_roller_btn.setStyleSheet(
-                f"QPushButton {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-                f"stop:0 {start},stop:1 {end}); color: white; border-radius: 4px;"
-                f"padding: 10px; font-weight: bold; }}"
-                f"QPushButton:hover {{ opacity: 0.85; }}"
-            )
-
         # Restyle the turn banner accent colour
         self.turn_timer_label.setStyleSheet(f"color: {accent}; padding: 2px 8px;")
 
@@ -2423,9 +2393,6 @@ class YahtzeeScorecard(QMainWindow):
         if hasattr(self, '_clock'): self._clock.stop()
         if hasattr(self, 'loop') and self.loop.isRunning(): self.loop.quit()
         if self._roller:
-            # Disconnect the hidden callback so hiding doesn't fire _on_roller_hidden
-            # then destroy the window for real.
-            self._roller.on_window_hidden = lambda: None
             self._roller.close()
         event.accept()
 
