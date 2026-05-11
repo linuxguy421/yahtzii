@@ -638,7 +638,7 @@ class YahtzeeRollerWidget(QWidget):
     Animated dice roller (from roll.py).
 
     When scorecard_mode=True it shows a player banner and a
-    "Done — Use These Dice" button. The scorecard connects
+    "Score" button. The scorecard connects
     on_turn_done(dice) to receive the confirmed roll.
     """
 
@@ -813,7 +813,7 @@ class YahtzeeRollerWidget(QWidget):
         root.addLayout(btn_row)
 
         if self.scorecard_mode:
-            self.use_dice_btn = QPushButton("✔  Done — Use These Dice")
+            self.use_dice_btn = QPushButton("✔  Score")
             self.use_dice_btn.setFixedHeight(46)
             self.use_dice_btn.setFont(QFont("Georgia", 13, QFont.Weight.Bold))
             self.use_dice_btn.setStyleSheet(
@@ -1115,7 +1115,6 @@ class YahtzeeRollerWidget(QWidget):
 
         if self.rolls_left == 0:
             self.status_label.setText(f"Round over!  Best open score: {label} — {pts} pts")
-            self._add_history(list(self.dice), label, pts)
             self.roll_button.setEnabled(False)
             self.hold_hint.hide()
             if self.scorecard_mode:
@@ -1208,20 +1207,6 @@ class YahtzeeRollerWidget(QWidget):
         for player, d, l, s in self.history:
             self.history_layout.addWidget(RollerHistoryRow(player, d, l, s, accent))
 
-    def update_last_history_label(self, category: str, pts: int):
-        """Replace the top history entry's label/score with the actual scorecard category chosen."""
-        if not self.history:
-            return
-        player, dice, _, _ = self.history[0]
-        self.history[0] = (player, dice, category, pts)
-        while self.history_layout.count():
-            item = self.history_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        accent = _ROLLER_THEMES[self.current_theme]["accent"]
-        for p, d, l, s in self.history:
-            self.history_layout.addWidget(RollerHistoryRow(p, d, l, s, accent))
-
     def _new_round(self):
         self.timer.stop()
         self._bounce_timer.stop()
@@ -1247,11 +1232,6 @@ class YahtzeeRollerWidget(QWidget):
 
     # --------------------------------- scorecard integration ----------------
     def _confirm_dice(self):
-        # Record history if the player finishes early (rolls_left > 0)
-        # When rolls_left == 0 it was already recorded in _finish_roll.
-        if self.rolls_left > 0:
-            label, pts = self._best_score_hint()
-            self._add_history(list(self.dice), label, pts)
         if self.on_turn_done:
             self.on_turn_done(list(self.dice))
 
@@ -1308,7 +1288,7 @@ class RulesDialog(QDialog):
                 <li>Press <b>ROLL</b> (hold to charge the power bar). Click any dice to
                     <b>hold</b> them, then press <b>ROLL</b> again (up to 3 rolls total).</li>
                 <li>You may confirm at any point — you don't have to use all 3 rolls.</li>
-                <li>Click <b>Done — Use These Dice</b> to lock in the roll. The scorecard
+                <li>Click <b>Score</b> to lock in the roll. The scorecard
                     unlocks and you choose a category normally.</li>
             </ol>
 
@@ -2215,8 +2195,7 @@ class YahtzeeScorecard(QMainWindow):
             self._roller_active = True
             self.table.setEnabled(False)
             self.turn_label.setText(
-                f"🎲 {player_name}'s turn — roll the dice, then click "
-                f"'Done — Use These Dice'."
+                f"🎲 {player_name}'s turn — roll the dice, click 'Score'"
             )
             self.turn_label.setStyleSheet(
                 f"color: {CLR_ACTIVE_TURN}; border: 2px solid {CLR_ACTIVE_TURN}44; "
@@ -2607,6 +2586,9 @@ class YahtzeeScorecard(QMainWindow):
                 f"✔  {self._last_unclaimed_name} replaced by {ROW_LABELS[r]} "
                 f"— now score your current turn"
             )
+            # Add to roller history with the actual category scored
+            if self.use_digital_roller and self._roller is not None and self._roller_dice is not None:
+                self._roller._add_history(list(self._roller_dice), ROW_LABELS[r], score)
             self.recalc(c); self.update_turn_ui()
         elif status == "unclaimed":
             self._correction_replaced_msg = ""
@@ -2617,9 +2599,9 @@ class YahtzeeScorecard(QMainWindow):
             self._last_score_msg = (
                 f"Last score: {self.players[c]}{roll_info} {ROW_LABELS[r]}  {score} pts"
             )
-            # Update the roller history so it shows the actual category scored
-            if self.use_digital_roller and self._roller is not None:
-                self._roller.update_last_history_label(ROW_LABELS[r], score)
+            # Add to roller history with the actual category scored
+            if self.use_digital_roller and self._roller is not None and self._roller_dice is not None:
+                self._roller._add_history(list(self._roller_dice), ROW_LABELS[r], score)
             self._update_streak(c, score)
             self.recalc(c); self.advance_to_next_player()
         else:
@@ -2643,6 +2625,8 @@ class YahtzeeScorecard(QMainWindow):
         item.setText(str(val))
         self.table.cellWidget(15, c).findChild(QLabel).setText(str(val))
         self._last_score_msg = f"Last score: {self.players[c]} → Yahtzii Bonus  +100 pts"
+        if self.use_digital_roller and self._roller is not None and self._roller_dice is not None:
+            self._roller._add_history(list(self._roller_dice), "Yahtzii Bonus", 100)
         self.joker_active = True
         self.recalc(c); self.update_turn_ui()
 
