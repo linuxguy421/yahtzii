@@ -2979,8 +2979,9 @@ class YahtzeeScorecard(QMainWindow):
         low_str  = "🪦 Worst: —"
 
         try:
-            if os.path.exists("yahtzee_highscores.json"):
-                with open("yahtzee_highscores.json") as f:
+            p = score_path("yahtzee_highscores.json")
+            if os.path.exists(p):
+                with open(p) as f:
                     data = json.load(f)
                 if data:
                     t = data[0]
@@ -2989,8 +2990,9 @@ class YahtzeeScorecard(QMainWindow):
             pass
 
         try:
-            if os.path.exists("yahtzee_lowscores.json"):
-                with open("yahtzee_lowscores.json") as f:
+            p = score_path("yahtzee_lowscores.json")
+            if os.path.exists(p):
+                with open(p) as f:
                     data = json.load(f)
                 if data:
                     b = data[0]
@@ -3093,6 +3095,15 @@ class YahtzeeScorecard(QMainWindow):
     def check_game_over(self):
         for c in range(self.table.columnCount()):
             if self.player_has_turns_left(c): return
+
+        # Flush all totals and the status bar / footer one last time so every
+        # running total, bonus, and stat is up-to-date before the Game Over
+        # dialog (or score-saving) reads those values.
+        for c in range(len(self.players)):
+            self.recalc(c)
+        self.update_status_bar()
+        QApplication.processEvents()
+
         scores = sorted(
             [(self.players[i], int(self.table.item(18, i).text()))
              for i in range(len(self.players))],
